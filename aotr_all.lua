@@ -1558,22 +1558,32 @@ elseif PID == MISSION_PID then
             return
         end
 
-        -- Requisitos de prestígio (da tabela do jogo)
-        -- {prestige_alvo, level_necessario}
+        -- Requisitos de prestígio (tabela do jogo)
+        -- {prestige_alvo, level_necessario, exp_total_necessario}
         local PRESTIGE_REQS = {
-            {1, 100}, {2, 125}, {3, 150}, {4, 175}, {5, 200},
+            {1, 100, 1952500},
+            {2, 125, 3429553},
+            {3, 150, 5265320},
+            {4, 175, 7334070},
+            {5, 200, 11673242},
         }
         local curPrestige = state.prestige or 0
         local curLevel = state.level or 0
-        -- Acha o próximo prestígio que podemos fazer
-        local nextPrestigeLevel
+        -- Acha o requisito do próximo prestígio
+        local nextPrestigeLevel, nextPrestigeXp
         for _, req in ipairs(PRESTIGE_REQS) do
             if req[1] == curPrestige + 1 then
                 nextPrestigeLevel = req[2]
+                nextPrestigeXp = req[3]
                 break
             end
         end
-        local canPrestige = nextPrestigeLevel ~= nil and curLevel >= nextPrestigeLevel
+        -- PRESTIGE pronto quando: atingiu o level máximo (cap) E a barra de XP encheu.
+        -- (a barra XP/Max_XP no level-cap reflete exatamente o XP que falta pro ENLIST)
+        local xpFull = state.xp ~= nil and state.maxXp ~= nil and state.xp >= state.maxXp
+        local canPrestige = nextPrestigeLevel ~= nil
+            and curLevel >= nextPrestigeLevel
+            and xpFull
 
         print("[auto] ╔══════════ FIM DE MISSAO ══════════╗")
         print(string.format("[auto]   Gold: %d  |  Grade: %d (%s)", state.gold, state.grade, state.tag))
@@ -1584,7 +1594,10 @@ elseif PID == MISSION_PID then
 
         local decision
         if canPrestige then
-            decision = "PRESTIGE disponivel (lvl " .. curLevel .. " >= " .. nextPrestigeLevel .. ")"
+            decision = "PRESTIGE disponivel (lvl " .. curLevel .. " + XP cheio)"
+        elseif nextPrestigeLevel and curLevel >= nextPrestigeLevel and not xpFull then
+            local falta = (state.maxXp or 0) - (state.xp or 0)
+            decision = "RETRY (level MAX, faltam " .. falta .. " XP pro ENLIST)"
         elseif state.costToNext > 0 and state.gold >= state.costToNext then
             decision = "LOBBY (vai upgradar)"
         else

@@ -209,6 +209,21 @@ local function readActorState()
             if best then maxDiff = best end
         end
 
+        -- Progression (Level/Prestige/XP) — Cache.Data.Slots[A].Progression
+        local prog
+        for _, obj in ipairs(getgc(true)) do
+            if type(obj) == "table" then
+                local lvl = rawget(obj, "Level")
+                local xp = rawget(obj, "XP")
+                local mxp = rawget(obj, "Max_XP")
+                local prest = rawget(obj, "Prestige")
+                if type(lvl)=="number" and type(xp)=="number" and type(mxp)=="number" and prest ~= nil then
+                    prog = {Level=lvl, XP=xp, Max_XP=mxp, Prestige=prest}
+                    break
+                end
+            end
+        end
+
         b:Fire({
             gold = wallet.Gold,
             grade = grade,
@@ -216,6 +231,10 @@ local function readActorState()
             tagNext = values.Pot_Tags[grade+1] or "MAX",
             costToNext = cost,
             maxDifficulty = maxDiff,
+            level = prog and prog.Level,
+            prestige = prog and prog.Prestige,
+            xp = prog and prog.XP,
+            maxXp = prog and prog.Max_XP,
         })
     ]==])
 
@@ -1539,20 +1558,56 @@ elseif PID == MISSION_PID then
             return
         end
 
+        -- Requisitos de prestígio (da tabela do jogo)
+        -- {prestige_alvo, level_necessario}
+        local PRESTIGE_REQS = {
+            {1, 100}, {2, 125}, {3, 150}, {4, 175}, {5, 200},
+        }
+        local curPrestige = state.prestige or 0
+        local curLevel = state.level or 0
+        -- Acha o próximo prestígio que podemos fazer
+        local nextPrestigeLevel
+        for _, req in ipairs(PRESTIGE_REQS) do
+            if req[1] == curPrestige + 1 then
+                nextPrestigeLevel = req[2]
+                break
+            end
+        end
+        local canPrestige = nextPrestigeLevel ~= nil and curLevel >= nextPrestigeLevel
+
         print("[auto] ╔══════════ FIM DE MISSAO ══════════╗")
-        print(string.format("[auto]   Gold: %d", state.gold))
-        print(string.format("[auto]   Grade: %d (%s) → próximo: %s", state.grade, state.tag, state.tagNext))
+        print(string.format("[auto]   Gold: %d  |  Grade: %d (%s)", state.gold, state.grade, state.tag))
+        print(string.format("[auto]   Prestige: %d  |  Level: %d/%s (XP %s/%s)",
+            curPrestige, curLevel, tostring(nextPrestigeLevel or "MAX"),
+            tostring(state.xp), tostring(state.maxXp)))
         print(string.format("[auto]   Custo p/ próxima grade: %d", state.costToNext))
+
         local decision
-        if state.costToNext == -1 then
-            decision = "RETRY (grade MAX)"
-        elseif state.gold >= state.costToNext then
+        if canPrestige then
+            decision = "PRESTIGE disponivel (lvl " .. curLevel .. " >= " .. nextPrestigeLevel .. ")"
+        elseif state.costToNext > 0 and state.gold >= state.costToNext then
             decision = "LOBBY (vai upgradar)"
         else
-            decision = string.format("RETRY (faltam %d gold)", state.costToNext - state.gold)
+            decision = "RETRY (farmando XP" .. (state.costToNext == -1 and ", grade MAX" or "") .. ")"
         end
         print("[auto]   Decisão: " .. decision)
         print("[auto] ╚════════════════════════════════════╝")
+
+        -- PRESTÍGIO: se atingiu o level necessário
+        if canPrestige then
+            print("[auto] >>> PRONTO PRA PRESTIGE <<< (lvl " .. curLevel .. ")")
+            -- doPrestige() ainda não implementado (remote a capturar no lvl 100).
+            -- PARA o loop aqui pra não ficar farmando à toa. Avisa repetidamente.
+            gg.__AOTR_PRESTIGE_READY = true
+            task.spawn(function()
+                while true do
+                    warn("[auto] *** LEVEL " .. curLevel .. " — PRONTO PRA PRESTIGE! "
+                        .. "Implementar doPrestige() (capturar remote). Auto-loop PARADO. ***")
+                    task.wait(15)
+                end
+            end)
+            return  -- não teleporta, não reinicia missão
+        end
 
         if state.costToNext > 0 and state.gold >= state.costToNext then
             armReinjectAndTeleport(LOBBY_PID)

@@ -401,11 +401,21 @@ local function doClaimQuests()
         -- mapa categoria -> Q code
         local CAT = { Main="Q_1", Side="Q_2", Spears="Q_2.1", Daily="Q_4", Weekly="Q_5" }
         local claimed = 0
+        local tried = 0
+        -- só vale tentar se: não-claimada E (sem Amount conhecido OU já completou)
+        local function worthTrying(q)
+            if type(q) ~= "table" or not q.Tag or q.Rewarded == true then return false end
+            if type(q.Amount) == "number" and type(q.Current) == "number" then
+                return q.Current >= q.Amount  -- pula incompletas (com Amount conhecido)
+            end
+            return true  -- sem Amount no data (Main/Side): tenta
+        end
         local function tryClaim(tag, code)
             if not tag or not code then return end
+            tried = tried + 1
             local ok, v3, v4, v5 = pcall(function() return GET:InvokeServer("Functions","Quest", tag, code) end)
             if ok and v3 ~= nil and v5 ~= nil then claimed = claimed + 1 end
-            task.wait(0.05)
+            task.wait(0.03)
         end
 
         -- Get_Data seguro (espera os dados carregarem após teleport)
@@ -421,9 +431,7 @@ local function doClaimQuests()
             local quests = data.Quests[catName]
             if type(quests) == "table" then
                 for _, q in pairs(quests) do
-                    if type(q) == "table" and q.Tag and q.Rewarded ~= true then
-                        tryClaim(q.Tag, code)
-                    end
+                    if worthTrying(q) then tryClaim(q.Tag, code) end
                 end
             end
         end
@@ -436,9 +444,7 @@ local function doClaimQuests()
                 if n and type(quests) == "table" then
                     local code = "Q_7." .. (tonumber(n) < 10 and ("0"..n) or n)
                     for _, q in pairs(quests) do
-                        if type(q) == "table" and q.Tag and q.Rewarded ~= true then
-                            tryClaim(q.Tag, code)
-                        end
+                        if worthTrying(q) then tryClaim(q.Tag, code) end
                     end
                 end
             end
@@ -1741,23 +1747,20 @@ elseif PID == LOBBY_PID then
         -- depois de prestigiar, segue o fluxo normal (upgrades+start_mission)
     end
 
-    -- 0) claima quests completas (toda vez que chega no lobby)
-    task.wait(1)
+    -- 0) claima quests completas (só as completas; rápido)
     local cl = doClaimQuests()
-    if cl.ok then
+    if cl.ok and cl.claimed > 0 then
         print("[auto] Quests claimadas: " .. tostring(cl.claimed))
-    else
-        warn("[auto] Claim quests falhou: " .. tostring(cl.err))
     end
 
-    print("[auto] Lobby — upgrade + start_mission")
-    -- 1) upgrades (gasta o que puder)
+    -- 1) upgrades (gasta gold). Quando maxed, retorna rápido.
     local ok1 = pcall(function()
         runUpgrades()
     end)
     if not ok1 then warn("[auto] upgrades falhou") end
-    task.wait(3)
-    -- 2) start_mission (vai detectar grade e escolher max difficulty)
+
+    -- 2) start_mission (detecta grade + modifiers + Create + Start)
+    print("[auto] Iniciando missão...")
     local ok2 = pcall(function()
         runStartMission()
     end)

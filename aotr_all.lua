@@ -222,17 +222,31 @@ local function readActorState()
             if best then maxDiff = best end
         end
 
-        -- Progression (Level/Prestige/XP) — Cache.Data.Slots[A].Progression
+        -- Progression do Modules LOCAL (Cache.Character==LP.Character) via Get_Data.
+        -- NÃO usa getgc cego — num lobby compartilhado isso pegava a Progression
+        -- de OUTRO player. Get_Data no Modules local sempre retorna SUA conta.
         local prog
-        for _, obj in ipairs(getgc(true)) do
-            if type(obj) == "table" then
-                local lvl = rawget(obj, "Level")
-                local xp = rawget(obj, "XP")
-                local mxp = rawget(obj, "Max_XP")
-                local prest = rawget(obj, "Prestige")
-                if type(lvl)=="number" and type(xp)=="number" and type(mxp)=="number" and prest ~= nil then
-                    prog = {Level=lvl, XP=xp, Max_XP=mxp, Prestige=prest}
-                    break
+        do
+            local Modules
+            for _, obj in ipairs(getgc(true)) do
+                if type(obj) == "table" then
+                    local sub = rawget(obj, "Modules"); local cache = rawget(obj, "Cache")
+                    if type(sub) == "table" and type(cache) == "table"
+                       and rawget(cache, "Character") == LP.Character
+                       and type(rawget(sub, "Update")) == "table" then
+                        Modules = obj; break
+                    end
+                end
+            end
+            if Modules then
+                for _ = 1, 20 do
+                    local ok, _, dt = pcall(function() return Modules.Modules.Update.Get_Data(Modules, true) end)
+                    if ok and dt and dt.Progression then
+                        local pr = dt.Progression
+                        prog = {Level=pr.Level, XP=pr.XP, Max_XP=pr.Max_XP, Prestige=pr.Prestige}
+                        break
+                    end
+                    task.wait(0.2)
                 end
             end
         end

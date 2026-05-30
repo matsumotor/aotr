@@ -222,11 +222,12 @@ local function readActorState()
             if best then maxDiff = best end
         end
 
-        -- Progression do Modules LOCAL (Cache.Character==LP.Character) via Get_Data.
-        -- NÃO usa getgc cego — num lobby compartilhado isso pegava a Progression
-        -- de OUTRO player. Get_Data no Modules local sempre retorna SUA conta.
+        -- Progression: lê do Modules LOCAL (Cache.Character==LP.Character) direto
+        -- de Cache.Data.Slots[slot].Progression (funciona em missão E lobby).
+        -- Fallback: getgc cego (último recurso).
         local prog
         do
+            -- acha Modules local
             local Modules
             for _, obj in ipairs(getgc(true)) do
                 if type(obj) == "table" then
@@ -238,15 +239,25 @@ local function readActorState()
                     end
                 end
             end
-            if Modules then
-                for _ = 1, 20 do
-                    local ok, _, dt = pcall(function() return Modules.Modules.Update.Get_Data(Modules, true) end)
-                    if ok and dt and dt.Progression then
-                        local pr = dt.Progression
-                        prog = {Level=pr.Level, XP=pr.XP, Max_XP=pr.Max_XP, Prestige=pr.Prestige}
-                        break
+            -- 1) via Cache.Data.Slots[slot].Progression
+            if Modules and Modules.Cache and Modules.Cache.Data then
+                local dt = Modules.Cache.Data
+                local slot = dt.Slots and dt.Current_Slot and dt.Slots[dt.Current_Slot]
+                if slot and slot.Progression then
+                    local pr = slot.Progression
+                    prog = {Level=pr.Level, XP=pr.XP, Max_XP=pr.Max_XP, Prestige=pr.Prestige}
+                end
+            end
+            -- 2) fallback getgc cego (se o caminho acima falhar)
+            if not prog then
+                for _, obj in ipairs(getgc(true)) do
+                    if type(obj) == "table" then
+                        local lvl=rawget(obj,"Level"); local xp=rawget(obj,"XP")
+                        local mxp=rawget(obj,"Max_XP"); local prest=rawget(obj,"Prestige")
+                        if type(lvl)=="number" and type(xp)=="number" and type(mxp)=="number" and prest~=nil then
+                            prog = {Level=lvl, XP=xp, Max_XP=mxp, Prestige=prest}; break
+                        end
                     end
-                    task.wait(0.2)
                 end
             end
         end

@@ -299,34 +299,49 @@ local function doPrestige()
         local pBefore, dataBefore = getPrestige()
         L("Prestige antes = "..tostring(pBefore))
 
-        -- Etapa 1: Talents invoke (retorna opções)
-        local ok1, r1, r2, r3 = pcall(function() return GET:InvokeServer("S_Equipment", "Talents") end)
-        L("Talents invoke ok="..tostring(ok1))
-        L("  r1(Data)="..(type(r1)=="table" and "table" or ser(r1)))
-        L("  r2(opcoes)="..ser(r2))
-        L("  r3="..ser(r3))
+        -- Helper: mapeia ID de talento -> Tag (nome usado na Selection)
+        -- Memories.Talents = {Offense=..., Defense=..., Support=...}, cada [id]={Tag=...}
+        local Mem = Modules.Modules.Memories
+        local function talentTag(id)
+            if not Mem or type(Mem.Talents) ~= "table" then return nil end
+            for _, cat in ipairs({"Offense","Defense","Support"}) do
+                local C = Mem.Talents[cat]
+                if type(C) == "table" then
+                    -- tenta acesso direto e por tostring (id pode ser number ou string)
+                    local info = C[id] or C[tonumber(id)] or C[tostring(id)]
+                    if type(info) == "table" and info.Tag then return info.Tag end
+                    for k, v in pairs(C) do
+                        if tostring(k) == tostring(id) and type(v) == "table" and v.Tag then return v.Tag end
+                    end
+                end
+            end
+            return nil
+        end
 
-        -- Monta Selection: pega 1a opção oferecida (Boosts e Talents)
-        -- r2 deve ser a lista de opções de talento
-        local selection = {}
-        local function firstName(opts)
-            if type(opts) ~= "table" then return nil end
-            for k, v in pairs(opts) do
-                if type(v) == "string" then return v end
-                if type(v) == "table" and type(v.Name) == "string" then return v.Name end
-                if type(k) == "string" then return k end
+        -- Etapa 1: Talents invoke (retorna IDs oferecidos)
+        local ok1, r1, opts, r3 = pcall(function() return GET:InvokeServer("S_Equipment", "Talents") end)
+        L("Talents invoke ok="..tostring(ok1).." opts="..ser(opts))
+
+        -- pega o Tag do 1o talento oferecido
+        local talentName
+        if type(opts) == "table" then
+            for _, id in pairs(opts) do
+                talentName = talentTag(id)
+                if talentName then break end
             end
         end
-        -- Boosts: tenta data.Next_Talents (oferta inicial)
-        local boostsOpts = dataBefore and dataBefore.Next_Talents
-        selection.Boosts = firstName(boostsOpts) or firstName(r2)
-        selection.Talents = firstName(r2)
+
+        -- Selection: Boosts fixo "EXP Boost" (ajuda no level), Talents = nome mapeado
+        local selection = { Boosts = "EXP Boost", Talents = talentName }
         L("Selection montada = "..ser(selection))
+        if not talentName then
+            L("ERRO: nao mapeou talento (opts="..ser(opts)..") — abortando")
+            b:Fire({ok=false, err="talent map fail", log=log}) return
+        end
 
         -- Etapa 2: Prestige invoke
-        local ok2, pr1, pr2, pr3 = pcall(function() return GET:InvokeServer("S_Equipment", "Prestige", selection) end)
-        L("Prestige invoke ok="..tostring(ok2))
-        L("  ret1="..(type(pr1)=="table" and "table(Data)" or ser(pr1)))
+        local ok2, pr1 = pcall(function() return GET:InvokeServer("S_Equipment", "Prestige", selection) end)
+        L("Prestige invoke ok="..tostring(ok2).." ret="..(type(pr1)=="table" and "table(Data)" or ser(pr1)))
 
         task.wait(1)
         local pAfter = getPrestige()

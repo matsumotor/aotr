@@ -243,6 +243,106 @@ local function readActorState()
     return result
 end
 
+-- ─── doPrestige: handshake Talents → Prestige (best-effort + log) ──
+-- Roda no actor. Pega primeira memória oferecida em cada etapa.
+-- Retorna {ok, prestigeAntes, prestigeDepois, log}
+local function doPrestige()
+    local charActor = LP.Character and LP.Character:FindFirstChild("Actor")
+    if not charActor then return {err="no actor"} end
+    local b = charActor:FindFirstChild("__AOTR_PRESTIGE_DO")
+    if b then b:Destroy() end
+    b = Instance.new("BindableEvent")
+    b.Name = "__AOTR_PRESTIGE_DO"
+    b.Parent = charActor
+    local result, done = nil, false
+    b.Event:Connect(function(d) result = d; done = true end)
+
+    run_on_actor(charActor, [==[
+        local LP = game:GetService("Players").LocalPlayer
+        local GET = game:GetService("ReplicatedStorage").Assets.Remotes.GET
+        local actor
+        local Chars = workspace:FindFirstChild("Characters")
+        if Chars and Chars:FindFirstChild(LP.Name) then actor = Chars[LP.Name].Actor else actor = LP.Character.Actor end
+        local b = actor:WaitForChild("__AOTR_PRESTIGE_DO", 5)
+        local log = {}
+        local function L(s) table.insert(log, s) end
+
+        -- serializa pra log
+        local function ser(v, d)
+            d = d or 0
+            if d > 4 then return "<deep>" end
+            if type(v) == "table" then
+                local p = {}
+                for k, val in pairs(v) do table.insert(p, "["..tostring(k).."]="..ser(val, d+1)) end
+                return "{"..table.concat(p, ",").."}"
+            elseif type(v) == "string" then return '"'..v..'"'
+            else return tostring(v) end
+        end
+
+        -- acha Modules
+        local Modules
+        for _, obj in ipairs(getgc(true)) do
+            if type(obj)=="table" then
+                local sub=rawget(obj,"Modules"); local cache=rawget(obj,"Cache")
+                if type(sub)=="table" and type(cache)=="table" and type(rawget(sub,"Update"))=="table" then
+                    Modules = obj; break
+                end
+            end
+        end
+        if not Modules then b:Fire({err="no Modules", log=log}) return end
+
+        -- prestige antes
+        local function getPrestige()
+            local _, data = Modules.Modules.Update.Get_Data(Modules, true)
+            return data and data.Progression and data.Progression.Prestige, data
+        end
+        local pBefore, dataBefore = getPrestige()
+        L("Prestige antes = "..tostring(pBefore))
+
+        -- Etapa 1: Talents invoke (retorna opções)
+        local ok1, r1, r2, r3 = pcall(function() return GET:InvokeServer("S_Equipment", "Talents") end)
+        L("Talents invoke ok="..tostring(ok1))
+        L("  r1(Data)="..(type(r1)=="table" and "table" or ser(r1)))
+        L("  r2(opcoes)="..ser(r2))
+        L("  r3="..ser(r3))
+
+        -- Monta Selection: pega 1a opção oferecida (Boosts e Talents)
+        -- r2 deve ser a lista de opções de talento
+        local selection = {}
+        local function firstName(opts)
+            if type(opts) ~= "table" then return nil end
+            for k, v in pairs(opts) do
+                if type(v) == "string" then return v end
+                if type(v) == "table" and type(v.Name) == "string" then return v.Name end
+                if type(k) == "string" then return k end
+            end
+        end
+        -- Boosts: tenta data.Next_Talents (oferta inicial)
+        local boostsOpts = dataBefore and dataBefore.Next_Talents
+        selection.Boosts = firstName(boostsOpts) or firstName(r2)
+        selection.Talents = firstName(r2)
+        L("Selection montada = "..ser(selection))
+
+        -- Etapa 2: Prestige invoke
+        local ok2, pr1, pr2, pr3 = pcall(function() return GET:InvokeServer("S_Equipment", "Prestige", selection) end)
+        L("Prestige invoke ok="..tostring(ok2))
+        L("  ret1="..(type(pr1)=="table" and "table(Data)" or ser(pr1)))
+
+        task.wait(1)
+        local pAfter = getPrestige()
+        L("Prestige depois = "..tostring(pAfter))
+
+        b:Fire({
+            ok = (pAfter ~= nil and pBefore ~= nil and pAfter > pBefore),
+            pBefore = pBefore, pAfter = pAfter, log = log,
+        })
+    ]==])
+
+    local t = tick()
+    while not done and tick() - t < 15 do task.wait(0.1) end
+    return result or {err="timeout"}
+end
+
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  MÓDULOS EMBUTIDOS (gerados por build_combined.js — NÃO EDITAR ║
@@ -623,7 +723,9 @@ run_on_actor(charActor, string.format([[
     -- Pega TODOS os titans vivos dentro do raio do "anchor" (centro do AOE)
     local function getTargetsInRange(anchorPos, radius, maxCount)
         local list = {}
-        for _, t in ipairs(workspace.Titans:GetChildren()) do
+        local titansFolder = workspace:FindFirstChild("Titans")
+        if not titansFolder then return list end  -- entre waves / transição: sem titans
+        for _, t in ipairs(titansFolder:GetChildren()) do
             local h = t:FindFirstChildOfClass("Humanoid")
             local hb = t:FindFirstChild("Hitboxes")
             local nape = hb and hb:FindFirstChild("Hit") and hb.Hit:FindFirstChild("Nape")
@@ -1511,6 +1613,25 @@ if PID == TITLE_PID then
     return
 
 elseif PID == LOBBY_PID then
+    -- PRESTÍGIO tem prioridade: se veio pra prestigiar, faz isso e nada mais
+    if gg.__AOTR_DO_PRESTIGE then
+        gg.__AOTR_DO_PRESTIGE = false
+        print("[auto] Lobby — tentando AUTO-PRESTIGE...")
+        task.wait(2)  -- deixa o lobby/data carregar
+        local pr = doPrestige()
+        print("[auto] ── PRESTIGE resultado ──")
+        if pr.log then for _, l in ipairs(pr.log) do print("[auto]   " .. l) end end
+        if pr.ok then
+            print("[auto] PRESTIGE OK! " .. tostring(pr.pBefore) .. " → " .. tostring(pr.pAfter))
+        else
+            warn("[auto] PRESTIGE falhou/incerto (err=" .. tostring(pr.err) .. "). Veja o log acima.")
+            warn("[auto] Auto-loop PARADO — faça o prestige manual e me mande o log.")
+            return  -- para pra não loopar; o log mostra a estrutura real pra ajustar
+        end
+        task.wait(2)
+        -- depois de prestigiar, segue o fluxo normal (upgrades+start_mission)
+    end
+
     print("[auto] Lobby — upgrade + start_mission")
     -- 1) upgrades (gasta o que puder)
     local ok1 = pcall(function()
@@ -1606,20 +1727,13 @@ elseif PID == MISSION_PID then
         print("[auto]   Decisão: " .. decision)
         print("[auto] ╚════════════════════════════════════╝")
 
-        -- PRESTÍGIO: se atingiu o level necessário
+        -- PRESTÍGIO: se atingiu level+XP. Prestige só funciona no LOBBY.
+        -- Marca flag e teleporta pro lobby; a rotina do lobby executa doPrestige().
         if canPrestige then
-            print("[auto] >>> PRONTO PRA PRESTIGE <<< (lvl " .. curLevel .. ")")
-            -- doPrestige() ainda não implementado (remote a capturar no lvl 100).
-            -- PARA o loop aqui pra não ficar farmando à toa. Avisa repetidamente.
-            gg.__AOTR_PRESTIGE_READY = true
-            task.spawn(function()
-                while true do
-                    warn("[auto] *** LEVEL " .. curLevel .. " — PRONTO PRA PRESTIGE! "
-                        .. "Implementar doPrestige() (capturar remote). Auto-loop PARADO. ***")
-                    task.wait(15)
-                end
-            end)
-            return  -- não teleporta, não reinicia missão
+            print("[auto] >>> PRONTO PRA PRESTIGE <<< (lvl " .. curLevel .. ") → lobby")
+            gg.__AOTR_DO_PRESTIGE = true
+            armReinjectAndTeleport(LOBBY_PID)
+            return
         end
 
         if state.costToNext > 0 and state.gold >= state.costToNext then

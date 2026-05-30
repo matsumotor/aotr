@@ -291,9 +291,19 @@ local function doPrestige()
         end
         if not Modules then b:Fire({err="no Modules", log=log}) return end
 
+        -- Get_Data seguro (espera os dados do player carregarem)
+        local function safeData()
+            for _ = 1, 40 do
+                local ok, _, dt = pcall(function() return Modules.Modules.Update.Get_Data(Modules, true) end)
+                if ok and dt ~= nil then return dt end
+                task.wait(0.25)
+            end
+            return nil
+        end
+
         -- prestige antes
         local function getPrestige()
-            local _, data = Modules.Modules.Update.Get_Data(Modules, true)
+            local data = safeData()
             return data and data.Progression and data.Progression.Prestige, data
         end
         local pBefore, dataBefore = getPrestige()
@@ -398,9 +408,14 @@ local function doClaimQuests()
             task.wait(0.05)
         end
 
-        -- 1) categorias simples
-        local _, data = Modules.Modules.Update.Get_Data(Modules, true)
-        if not data or type(data.Quests) ~= "table" then b:Fire({err="no Quests data"}) return end
+        -- Get_Data seguro (espera os dados carregarem após teleport)
+        local data
+        for _ = 1, 40 do
+            local ok, _, dt = pcall(function() return Modules.Modules.Update.Get_Data(Modules, true) end)
+            if ok and dt ~= nil then data = dt; break end
+            task.wait(0.25)
+        end
+        if not data or type(data.Quests) ~= "table" then b:Fire({err="no Quests data (timeout)"}) return end
 
         for catName, code in pairs(CAT) do
             local quests = data.Quests[catName]

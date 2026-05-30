@@ -358,6 +358,85 @@ local function doPrestige()
     return result or {err="timeout"}
 end
 
+-- ─── doClaimQuests: claima todas as quests completas ──────────────
+-- Remote: Invoke("Functions","Quest", Tag, Q_code). Roda no actor.
+local function doClaimQuests()
+    local charActor = LP.Character and LP.Character:FindFirstChild("Actor")
+    if not charActor then return {err="no actor"} end
+    local b = charActor:FindFirstChild("__AOTR_CLAIM")
+    if b then b:Destroy() end
+    b = Instance.new("BindableEvent")
+    b.Name = "__AOTR_CLAIM"
+    b.Parent = charActor
+    local result, done = nil, false
+    b.Event:Connect(function(d) result = d; done = true end)
+
+    run_on_actor(charActor, [==[
+        local LP = game:GetService("Players").LocalPlayer
+        local GET = game:GetService("ReplicatedStorage").Assets.Remotes.GET
+        local actor
+        local Chars = workspace:FindFirstChild("Characters")
+        if Chars and Chars:FindFirstChild(LP.Name) then actor = Chars[LP.Name].Actor else actor = LP.Character.Actor end
+        local b = actor:WaitForChild("__AOTR_CLAIM", 5)
+
+        local Modules
+        for _, obj in ipairs(getgc(true)) do
+            if type(obj)=="table" then
+                local sub=rawget(obj,"Modules"); local cache=rawget(obj,"Cache")
+                if type(sub)=="table" and type(cache)=="table" and type(rawget(sub,"Update"))=="table" then Modules=obj; break end
+            end
+        end
+        if not Modules then b:Fire({err="no Modules"}) return end
+
+        -- mapa categoria -> Q code
+        local CAT = { Main="Q_1", Side="Q_2", Spears="Q_2.1", Daily="Q_4", Weekly="Q_5" }
+        local claimed = 0
+        local function tryClaim(tag, code)
+            if not tag or not code then return end
+            local ok, v3, v4, v5 = pcall(function() return GET:InvokeServer("Functions","Quest", tag, code) end)
+            if ok and v3 ~= nil and v5 ~= nil then claimed = claimed + 1 end
+            task.wait(0.05)
+        end
+
+        -- 1) categorias simples
+        local _, data = Modules.Modules.Update.Get_Data(Modules, true)
+        if not data or type(data.Quests) ~= "table" then b:Fire({err="no Quests data"}) return end
+
+        for catName, code in pairs(CAT) do
+            local quests = data.Quests[catName]
+            if type(quests) == "table" then
+                for _, q in pairs(quests) do
+                    if type(q) == "table" and q.Tag and q.Rewarded ~= true then
+                        tryClaim(q.Tag, code)
+                    end
+                end
+            end
+        end
+
+        -- 2) Battlepass (por semana): Week_N -> Q_7.0N
+        local bp = data.Quests.Battlepass
+        if type(bp) == "table" then
+            for weekKey, quests in pairs(bp) do
+                local n = tostring(weekKey):match("Week_(%d+)")
+                if n and type(quests) == "table" then
+                    local code = "Q_7." .. (tonumber(n) < 10 and ("0"..n) or n)
+                    for _, q in pairs(quests) do
+                        if type(q) == "table" and q.Tag and q.Rewarded ~= true then
+                            tryClaim(q.Tag, code)
+                        end
+                    end
+                end
+            end
+        end
+
+        b:Fire({ok=true, claimed=claimed})
+    ]==])
+
+    local t = tick()
+    while not done and tick() - t < 30 do task.wait(0.1) end
+    return result or {err="timeout"}
+end
+
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  MÓDULOS EMBUTIDOS (gerados por build_combined.js — NÃO EDITAR ║
@@ -1645,6 +1724,15 @@ elseif PID == LOBBY_PID then
         end
         task.wait(2)
         -- depois de prestigiar, segue o fluxo normal (upgrades+start_mission)
+    end
+
+    -- 0) claima quests completas (toda vez que chega no lobby)
+    task.wait(1)
+    local cl = doClaimQuests()
+    if cl.ok then
+        print("[auto] Quests claimadas: " .. tostring(cl.claimed))
+    else
+        warn("[auto] Claim quests falhou: " .. tostring(cl.err))
     end
 
     print("[auto] Lobby — upgrade + start_mission")

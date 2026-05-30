@@ -1822,21 +1822,75 @@ elseif PID == MISSION_PID then
     local Rewards = Interface:WaitForChild("Rewards", 30)
     if not Rewards then warn("[auto] Rewards UI não encontrada") return end
 
+    -- Retry da missão SEM ir pro lobby (Functions.Retry → fallback Create+Start)
+    local function doRetryInPlace(chosen)
+        chosen = chosen or "Aberrant"
+        -- reset sentinel Rewards.Retrying
+        local Chars = workspace:FindFirstChild("Characters")
+        local f = Chars and Chars:FindFirstChild(LP.Name)
+        local resetCharActor = f and f:FindFirstChild("Actor")
+        if resetCharActor then
+            pcall(run_on_actor, resetCharActor, [[
+                for _, obj in ipairs(getgc(true)) do
+                    if type(obj) == "table" and rawget(obj, "Retrying") ~= nil and rawget(obj, "Rewarded") ~= nil then
+                        obj.Retrying = false; break
+                    end
+                end
+            ]])
+            task.wait(0.1)
+        end
+
+        local GET = RS.Assets.Remotes.GET
+        pcall(function() GET:InvokeServer("Functions", "Retry", "Add") end)
+
+        task.wait(5)
+        if game.PlaceId == MISSION_PID then
+            pcall(function()
+                GET:InvokeServer("S_Missions", "Create", {
+                    Name = "Shiganshina", Difficulty = chosen, Type = "Missions", Objective = "Skirmish",
+                })
+                task.wait(0.5)
+                local ENABLE = { "No Perks","No Skills","No Memories","Injury Prone","Chronic Injuries","Fog","Time Trial" }
+                local DISABLE = { "Nightmare","Oddball","Boring","Simple","Glass Cannon" }
+                local function setMod(tag, wantOn)
+                    local ret
+                    for _ = 1, 2 do
+                        local ok, r = pcall(function() return GET:InvokeServer("S_Missions", "Modify", tag) end)
+                        if not ok or r == nil then return end
+                        ret = r; if ret == wantOn then return end
+                    end
+                end
+                for _, tag in ipairs(ENABLE) do setMod(tag, true) end
+                for _, tag in ipairs(DISABLE) do setMod(tag, false) end
+                task.wait(0.3)
+                GET:InvokeServer("S_Missions", "Start")
+            end)
+            task.wait(5)
+        end
+
+        -- só vai pro lobby se o retry realmente não funcionou
+        if game.PlaceId == MISSION_PID then
+            warn("[auto] Retry sem efeito — fallback teleport lobby")
+            armReinjectAndTeleport(LOBBY_PID)
+        end
+    end
+
     local function onMissionEnd()
         if gg.__AOTR_AUTO_FIRED then return end
         gg.__AOTR_AUTO_FIRED = true
 
         task.wait(2)  -- deixa o card aparecer/animar completo
 
-        local state = readActorState()
-        if not state then
-            warn("[auto] Não consegui ler state — indo pro lobby por segurança")
-            armReinjectAndTeleport(LOBBY_PID)
-            return
+        -- readActorState com retry (não vai pro lobby por falha de leitura)
+        local state
+        for _ = 1, 3 do
+            state = readActorState()
+            if state and not state.err then break end
+            task.wait(1)
         end
-        if state.err then
-            warn("[auto] state err: " .. tostring(state.err) .. " — indo pro lobby")
-            armReinjectAndTeleport(LOBBY_PID)
+        if not state or state.err then
+            warn("[auto] state ilegível (" .. tostring(state and state.err) .. ") — RETRY no lugar (sem lobby)")
+            doRetryInPlace("Aberrant")
             return
         end
 
@@ -1897,85 +1951,14 @@ elseif PID == MISSION_PID then
             return
         end
 
+        -- Só vai pro LOBBY se realmente dá pra UPGRADAR (gold suficiente). Senão RETRY no lugar.
         if state.costToNext > 0 and state.gold >= state.costToNext then
+            print("[auto] Gold suficiente → lobby pra upgradar")
             armReinjectAndTeleport(LOBBY_PID)
         else
-            -- Não dá pra upgrade: RETRY no lugar (Create+Start, sem ir pro lobby)
-            local chosen = state.maxDifficulty or "Normal"
-            if state.costToNext == -1 then
-                print("[auto] Grade MAX — retry " .. chosen)
-            else
-                print(string.format("[auto] Gold insuficiente (%d < %d) — retry %s",
-                    state.gold, state.costToNext, chosen))
-            end
-
-            -- Reset sentinel Rewards.Retrying via actor (senão Retry bail silencioso)
-            local resetCharActor
-            local Chars = workspace:FindFirstChild("Characters")
-            local f = Chars and Chars:FindFirstChild(LP.Name)
-            resetCharActor = f and f:FindFirstChild("Actor")
-            if resetCharActor then
-                run_on_actor(resetCharActor, [[
-                    for _, obj in ipairs(getgc(true)) do
-                        if type(obj) == "table" and rawget(obj, "Retrying") ~= nil then
-                            -- Heurística: Rewards module tem Retrying + Rewarded
-                            if rawget(obj, "Rewarded") ~= nil then
-                                obj.Retrying = false; break
-                            end
-                        end
-                    end
-                ]])
-                task.wait(0.1)
-            end
-
-            -- O Retry real é Functions.Retry com arg "Add" (não S_Missions.Retry)
-            local GET = RS.Assets.Remotes.GET
-            local okRetry, retRetry = pcall(function()
-                return GET:InvokeServer("Functions", "Retry", "Add")
-            end)
-            print("[auto] Functions.Retry ok=" .. tostring(okRetry) .. " ret=" .. tostring(retRetry))
-
-            -- Se Retry não funcionou em 5s, tenta Create + Modifiers + Start
-            task.wait(5)
-            if game.PlaceId == MISSION_PID then
-                pcall(function()
-                    GET:InvokeServer("S_Missions", "Create", {
-                        Name = "Shiganshina",
-                        Difficulty = chosen,
-                        Type = "Missions",
-                        Objective = "Skirmish",
-                    })
-                    task.wait(0.5)
-
-                    -- Modifiers (mesma config do start_mission)
-                    local ENABLE = {
-                        "No Perks", "No Skills", "No Memories",
-                        "Injury Prone", "Chronic Injuries", "Fog", "Time Trial",
-                    }
-                    local DISABLE = { "Nightmare", "Oddball", "Boring", "Simple", "Glass Cannon" }
-                    local function setMod(tag, wantOn)
-                        local ret
-                        for _ = 1, 2 do
-                            local ok, r = pcall(function() return GET:InvokeServer("S_Missions", "Modify", tag) end)
-                            if not ok or r == nil then return end
-                            ret = r
-                            if ret == wantOn then return end
-                        end
-                    end
-                    for _, tag in ipairs(ENABLE) do setMod(tag, true) end
-                    for _, tag in ipairs(DISABLE) do setMod(tag, false) end
-
-                    task.wait(0.3)
-                    GET:InvokeServer("S_Missions", "Start")
-                end)
-                task.wait(5)
-            end
-
-            -- Última tentativa: ir pro lobby (vai chamar start_mission de lá)
-            if game.PlaceId == MISSION_PID then
-                warn("[auto] Retry sem efeito — fallback teleport lobby")
-                armReinjectAndTeleport(LOBBY_PID)
-            end
+            local chosen = state.maxDifficulty or "Aberrant"
+            print("[auto] RETRY no lugar (" .. chosen .. ")")
+            doRetryInPlace(chosen)
         end
     end
 

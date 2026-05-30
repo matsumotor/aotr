@@ -57,6 +57,18 @@ end
 local actorWait = LP.Character:WaitForChild("Actor", 10)
 if not actorWait then warn("[auto] Actor não apareceu em 10s") end
 
+-- Espera o actor estar RODANDO (existir != estar running pro run_on_actor)
+local function waitActorReady(charActor, timeout)
+    if not charActor then return false end
+    local t0 = tick()
+    while tick() - t0 < (timeout or 15) do
+        local ok = pcall(run_on_actor, charActor, "local _=1")
+        if ok then return true end
+        task.wait(0.3)
+    end
+    return false
+end
+
 -- ─── Helpers: leitura de gold + grade + cost-to-next via actor ───
 local function readActorState()
     -- Roda sync no actor, retorna {gold, grade, costToNextGrade, levels}
@@ -70,6 +82,7 @@ local function readActorState()
         charActor = LP.Character and LP.Character:FindFirstChild("Actor")
     end
     if not charActor then return nil end
+    if not waitActorReady(charActor) then return {err="actor not running"} end
 
     local b = charActor:FindFirstChild("__AOTR_AUTO_STATE")
     if b then b:Destroy() end
@@ -249,6 +262,7 @@ end
 local function doPrestige()
     local charActor = LP.Character and LP.Character:FindFirstChild("Actor")
     if not charActor then return {err="no actor"} end
+    if not waitActorReady(charActor) then return {err="actor not running"} end
     local b = charActor:FindFirstChild("__AOTR_PRESTIGE_DO")
     if b then b:Destroy() end
     b = Instance.new("BindableEvent")
@@ -373,6 +387,7 @@ end
 local function doClaimQuests()
     local charActor = LP.Character and LP.Character:FindFirstChild("Actor")
     if not charActor then return {err="no actor"} end
+    if not waitActorReady(charActor) then return {err="actor not running"} end
     local b = charActor:FindFirstChild("__AOTR_CLAIM")
     if b then b:Destroy() end
     b = Instance.new("BindableEvent")

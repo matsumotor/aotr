@@ -222,12 +222,11 @@ local function readActorState()
             if best then maxDiff = best end
         end
 
-        -- Progression: lê do Modules LOCAL (Cache.Character==LP.Character) direto
-        -- de Cache.Data.Slots[slot].Progression (funciona em missão E lobby).
-        -- Fallback: getgc cego (último recurso).
+        -- Progression: SEMPRE do Modules LOCAL (Cache.Character==LP.Character) via
+        -- Cache.Data.Slots[slot].Progression. Retry até achar — SEM fallback getgc
+        -- cego (que pegava outro player e imprimia level errado).
         local prog
-        do
-            -- acha Modules local
+        for _ = 1, 15 do
             local Modules
             for _, obj in ipairs(getgc(true)) do
                 if type(obj) == "table" then
@@ -239,27 +238,16 @@ local function readActorState()
                     end
                 end
             end
-            -- 1) via Cache.Data.Slots[slot].Progression
             if Modules and Modules.Cache and Modules.Cache.Data then
                 local dt = Modules.Cache.Data
                 local slot = dt.Slots and dt.Current_Slot and dt.Slots[dt.Current_Slot]
                 if slot and slot.Progression then
                     local pr = slot.Progression
                     prog = {Level=pr.Level, XP=pr.XP, Max_XP=pr.Max_XP, Prestige=pr.Prestige}
+                    break
                 end
             end
-            -- 2) fallback getgc cego (se o caminho acima falhar)
-            if not prog then
-                for _, obj in ipairs(getgc(true)) do
-                    if type(obj) == "table" then
-                        local lvl=rawget(obj,"Level"); local xp=rawget(obj,"XP")
-                        local mxp=rawget(obj,"Max_XP"); local prest=rawget(obj,"Prestige")
-                        if type(lvl)=="number" and type(xp)=="number" and type(mxp)=="number" and prest~=nil then
-                            prog = {Level=lvl, XP=xp, Max_XP=mxp, Prestige=prest}; break
-                        end
-                    end
-                end
-            end
+            task.wait(0.2)
         end
 
         b:Fire({
@@ -1778,23 +1766,30 @@ if PID == TITLE_PID then
     return
 
 elseif PID == LOBBY_PID then
-    -- PRESTÍGIO tem prioridade: se veio pra prestigiar, faz isso e nada mais
-    if gg.__AOTR_DO_PRESTIGE then
-        gg.__AOTR_DO_PRESTIGE = false
-        print("[auto] Lobby — tentando AUTO-PRESTIGE...")
-        task.wait(2)  -- deixa o lobby/data carregar
-        local pr = doPrestige()
-        print("[auto] ── PRESTIGE resultado ──")
-        if pr.log then for _, l in ipairs(pr.log) do print("[auto]   " .. l) end end
-        if pr.ok then
-            print("[auto] PRESTIGE OK! " .. tostring(pr.pBefore) .. " → " .. tostring(pr.pAfter))
-        else
-            warn("[auto] PRESTIGE falhou/incerto (err=" .. tostring(pr.err) .. "). Veja o log acima.")
-            warn("[auto] Auto-loop PARADO — faça o prestige manual e me mande o log.")
-            return  -- para pra não loopar; o log mostra a estrutura real pra ajustar
+    -- PRESTÍGIO: o lobby DETECTA a readiness sozinho (sem flag — flag não
+    -- sobrevive ao teleport). Lê o state e checa level-cap + XP cheio.
+    do
+        local st = readActorState()
+        if st and not st.err then
+            local REQ = { {1,100},{2,125},{3,150},{4,175},{5,200} }
+            local cp = st.prestige or 0
+            local needLvl
+            for _, r in ipairs(REQ) do if r[1] == cp + 1 then needLvl = r[2]; break end end
+            local xpFull = st.xp ~= nil and st.maxXp ~= nil and st.xp >= st.maxXp
+            local ready = needLvl ~= nil and (st.level or 0) >= needLvl and xpFull
+            if ready then
+                print(string.format("[auto] LOBBY: prestige-ready (P%d lvl %d, XP cheio) — prestigiando...",
+                    cp, st.level or 0))
+                local pr = doPrestige()
+                if pr.log then for _, l in ipairs(pr.log) do print("[auto]   " .. l) end end
+                if pr.ok then
+                    print("[auto] PRESTIGE OK! " .. tostring(pr.pBefore) .. " → " .. tostring(pr.pAfter))
+                else
+                    warn("[auto] PRESTIGE não confirmou (segue farmando; tenta de novo no próximo lobby)")
+                end
+                task.wait(1.5)
+            end
         end
-        task.wait(2)
-        -- depois de prestigiar, segue o fluxo normal (upgrades+start_mission)
     end
 
     -- 0) claima quests completas (só as completas; rápido)
@@ -1952,11 +1947,10 @@ elseif PID == MISSION_PID then
         print("[auto]   Decisão: " .. decision)
         print("[auto] ╚════════════════════════════════════╝")
 
-        -- PRESTÍGIO: se atingiu level+XP. Prestige só funciona no LOBBY.
-        -- Marca flag e teleporta pro lobby; a rotina do lobby executa doPrestige().
+        -- PRESTÍGIO: prestige só funciona no LOBBY. Só TELEPORTA — o lobby
+        -- detecta a readiness sozinho (flag não sobrevive ao teleport: VM nova).
         if canPrestige then
             print("[auto] >>> PRONTO PRA PRESTIGE <<< (lvl " .. curLevel .. ") → lobby")
-            gg.__AOTR_DO_PRESTIGE = true
             armReinjectAndTeleport(LOBBY_PID)
             return
         end

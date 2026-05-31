@@ -388,16 +388,26 @@ local function doPrestige()
             b:Fire({ok=false, err="talent map fail", log=log}) return
         end
 
-        -- Etapa 2: Prestige invoke
-        local ok2, pr1 = pcall(function() return GET:InvokeServer("S_Equipment", "Prestige", selection) end)
-        L("Prestige invoke ok="..tostring(ok2).." ret="..(type(pr1)=="table" and "table(Data)" or ser(pr1)))
+        -- Etapa 2: Prestige invoke. Retorna (newData, v7, v8) — todos não-nil = SUCESSO.
+        -- (igual M_Confirm: se v6/v7/v8 ~= nil então Cache.Data = v6)
+        local ok2, v6, v7, v8 = pcall(function() return GET:InvokeServer("S_Equipment", "Prestige", selection) end)
+        local success = ok2 and v6 ~= nil and v7 ~= nil and v8 ~= nil
+        L("Prestige invoke ok="..tostring(ok2).." v6="..type(v6).." v7="..type(v7).." v8="..type(v8))
 
-        task.wait(1)
-        local pAfter = getPrestige()
-        L("Prestige depois = "..tostring(pAfter))
+        local pAfter = pBefore
+        if success then
+            -- ATUALIZA o Cache.Data com o retorno (senão fica stale = parece que falhou)
+            Modules.Cache.Data = v6
+            -- lê o novo prestige do RETORNO (não do cache antigo)
+            local sl = v6.Slots and v6.Current_Slot and v6.Slots[v6.Current_Slot]
+            if sl and sl.Progression then pAfter = sl.Progression.Prestige end
+            L("SUCESSO! Cache.Data atualizado. Prestige depois="..tostring(pAfter))
+        else
+            L("Prestige NAO retornou data completa (provavelmente já prestigiou ou rejeitou)")
+        end
 
         b:Fire({
-            ok = (pAfter ~= nil and pBefore ~= nil and pAfter > pBefore),
+            ok = success,
             pBefore = pBefore, pAfter = pAfter, log = log,
         })
     ]==])
